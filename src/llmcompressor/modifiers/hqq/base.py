@@ -1,4 +1,5 @@
 import torch
+from compressed_tensors.config import CompressionFormat
 from compressed_tensors.utils import (
     align_module_device,
     delete_offload_parameter,
@@ -66,3 +67,7 @@ class HQQModifier(QuantizationModifier):
             # Update quant_args zp_dtype
             quant_args.zp_dtype = zero_point.dtype
             quant_args.symmetric = False
+
+            # HQQ uses floating-point zero points, so we need to use int_quantized
+            # format instead of pack_quantized (which requires int8 zero points)
+            module.quantization_scheme.format = CompressionFormat.int_quantized.value
