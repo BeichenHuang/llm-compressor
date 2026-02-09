@@ -11,12 +11,14 @@ from compressed_tensors.quantization import (
     QuantizationConfig,
     QuantizationScheme,
     QuantizationStatus,
+    QuantizationStrategy,
+    QuantizationType,
     apply_quantization_config,
     disable_quantization,
     enable_quantization,
     is_attention_module,
-    is_preset_scheme,
-    preset_name_to_scheme,
+    is_preset_scheme as _is_preset_scheme,
+    preset_name_to_scheme as _preset_name_to_scheme,
 )
 from compressed_tensors.utils import match_named_modules
 from pydantic import Field, PrivateAttr, field_validator
@@ -37,6 +39,94 @@ from llmcompressor.modifiers.utils.hooks import HooksMixin
 from llmcompressor.utils import targets_embeddings, untie_word_embeddings
 
 __all__ = ["QuantizationMixin"]
+
+
+# ============================================================================
+# Local Preset Schemes for extended bit-width support (e.g., 3-bit, 2-bit)
+# These schemes are not yet available in compressed_tensors but are supported
+# by the quantization algorithms in llm-compressor
+# ============================================================================
+
+# 3-bit integer weights only quantization (weight-only, group quantization)
+W3A16 = dict(
+    weights=QuantizationArgs(
+        num_bits=3,
+        type=QuantizationType.INT,
+        strategy=QuantizationStrategy.GROUP,
+        group_size=128,
+        symmetric=True,
+        dynamic=False,
+    ),
+)
+
+# 3-bit integer weights only asymmetric quantization
+W3A16_ASYM = dict(
+    weights=QuantizationArgs(
+        num_bits=3,
+        type=QuantizationType.INT,
+        strategy=QuantizationStrategy.GROUP,
+        group_size=128,
+        symmetric=False,
+        dynamic=False,
+    ),
+)
+
+# 2-bit integer weights only quantization
+W2A16 = dict(
+    weights=QuantizationArgs(
+        num_bits=2,
+        type=QuantizationType.INT,
+        strategy=QuantizationStrategy.GROUP,
+        group_size=128,
+        symmetric=True,
+        dynamic=False,
+    ),
+)
+
+# Local preset schemes registry
+LOCAL_PRESET_SCHEMES = {
+    "W3A16": W3A16,
+    "W3A16_ASYM": W3A16_ASYM,
+    "W2A16": W2A16,
+}
+
+
+def is_preset_scheme(name: str) -> bool:
+    """
+    Check if a scheme name is a valid preset scheme (from compressed_tensors
+    or local llm-compressor presets).
+
+    :param name: scheme name to check
+    :return: True if the name is a valid preset scheme
+    """
+    return _is_preset_scheme(name) or name.upper() in LOCAL_PRESET_SCHEMES
+
+
+def preset_name_to_scheme(name: str, targets: List[str]) -> QuantizationScheme:
+    """
+    Get a QuantizationScheme from a preset name. First checks compressed_tensors
+    presets, then falls back to local llm-compressor presets.
+
+    :param name: preset scheme name
+    :param targets: list of quantization targets
+    :return: QuantizationScheme for the given preset
+    """
+    # First try compressed_tensors presets
+    if _is_preset_scheme(name):
+        return _preset_name_to_scheme(name, targets)
+
+    # Then try local presets
+    upper_name = name.upper()
+    if upper_name in LOCAL_PRESET_SCHEMES:
+        from copy import deepcopy
+
+        scheme_args = deepcopy(LOCAL_PRESET_SCHEMES[upper_name])
+        return QuantizationScheme(targets=targets, **scheme_args)
+
+    raise KeyError(
+        f"Unknown preset scheme name {name}, "
+        f"available names: {list(LOCAL_PRESET_SCHEMES.keys())}"
+    )
 
 
 class QuantizationMixin(HooksMixin):

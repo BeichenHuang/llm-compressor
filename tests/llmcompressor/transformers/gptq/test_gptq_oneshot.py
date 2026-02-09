@@ -49,6 +49,27 @@ recipe_modifier_shorthand_b = GPTQModifier(
     ignore=["lm_head"], scheme={"W4A16": ["re:.*model.layers.2.self_attn.q_proj$"]}
 )
 
+# 3-bit quantization recipes (W3A16)
+recipe_modifier_3bit_shorthand = GPTQModifier(
+    ignore=["lm_head"], targets="re:.*model.layers.2.self_attn.q_proj$", scheme="W3A16"
+)
+
+recipe_modifier_3bit_asym = GPTQModifier(
+    ignore=["lm_head"],
+    targets="re:.*model.layers.2.self_attn.q_proj$",
+    scheme="W3A16_ASYM",
+)
+
+recipe_modifier_3bit_full = GPTQModifier(
+    ignore=["lm_head"],
+    config_groups={
+        "group_0": QuantizationScheme(
+            targets=["re:.*model.layers.2.self_attn.q_proj$"],
+            weights=QuantizationArgs(num_bits=3, strategy="group", group_size=128),
+        )
+    },
+)
+
 
 @pytest.mark.parametrize(
     "recipe",
@@ -93,6 +114,55 @@ def test_oneshot_application(recipe, tmp_path):
     weight_args = quantization_config.config_groups["group_0"].weights
     assert isinstance(weight_args, QuantizationArgs)
     assert weight_args.num_bits == 4
+
+    # Check a specific layer is quantized
+    targetted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
+    assert hasattr(targetted_linear_layer, "quantization_scheme")
+
+    # Check lm-head is not quantized
+    not_targetted = model_loaded.lm_head
+    assert not hasattr(not_targetted, "quantization_scheme")
+
+
+@pytest.mark.parametrize(
+    "recipe,expected_bits,expected_symmetric",
+    [
+        (recipe_modifier_3bit_shorthand, 3, True),
+        (recipe_modifier_3bit_asym, 3, False),
+        (recipe_modifier_3bit_full, 3, True),
+    ],
+)
+def test_3bit_gptq_quantization(recipe, expected_bits, expected_symmetric, tmp_path):
+    """Test 3-bit GPTQ quantization with various recipes."""
+    output = tmp_path / "oneshot_output_3bit"
+    model = "TinyLlama/TinyLlama-1.1B-Chat-v1.0"
+    dataset = "open_platypus"
+    device = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+    oneshot(
+        model=model,
+        dataset=dataset,
+        output_dir=output,
+        recipe=recipe,
+        num_calibration_samples=9,
+    )
+    model_loaded = AutoModelForCausalLM.from_pretrained(output, device_map=device)
+
+    # Check that the model is quantized
+    quantization_config = model_loaded.config.quantization_config.quantization_config
+    assert quantization_config is not None
+
+    # check config is set properly
+    assert "lm_head" in quantization_config.ignore
+    assert len(quantization_config.config_groups) == 1
+    quant_scheme = quantization_config.config_groups["group_0"]
+    assert isinstance(quant_scheme, QuantizationScheme)
+    weight_args = quantization_config.config_groups["group_0"].weights
+    assert isinstance(weight_args, QuantizationArgs)
+
+    # Verify 3-bit configuration
+    assert weight_args.num_bits == expected_bits
+    assert weight_args.symmetric == expected_symmetric
 
     # Check a specific layer is quantized
     targetted_linear_layer = model_loaded.model.layers[2].self_attn.q_proj
